@@ -12,13 +12,8 @@
 #define POST_PULSE_MS   1        // wake pulse -> UART handover — keep small
 #define KEEPALIVE_MS    2000     // session drops after ~5 s of silence
 
+#include "state.h"
 
-
-
-extern HardwareSerial KLine;
-extern bool g_connected;
-extern uint32_t g_lastTx;
-
-bool sdsRead();
+bool sdsRead(EcuSnapshot* ecu);
 bool sdsInit();
 //bool decodeLid08(const uint8_t *d, uint8_t n);

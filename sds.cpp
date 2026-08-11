@@ -6,8 +6,10 @@ static void sendShort(const uint8_t *d, uint8_t len);
 static void dump(const char *tag, const uint8_t *b, uint8_t n);
 static uint8_t checksum(const uint8_t *b, uint8_t n);
 
+static HardwareSerial KLine(2);
+static uint32_t g_lastTx    = 0;
+static bool connected = false;
 
-// Reads one frame, both formats. Returns payload length, 0 on failure.
 static uint8_t readFrame(uint8_t *out, uint8_t outMax, uint32_t timeoutMs = 400) {
   uint32_t t0 = millis();
   uint8_t buf[80], got = 0, len = 0, hdr = 0, total = 0;
@@ -42,10 +44,7 @@ static uint8_t readFrame(uint8_t *out, uint8_t outMax, uint32_t timeoutMs = 400)
   return 0;
 }
 
-// ------------------------------------------------------------------
-// init
-// ------------------------------------------------------------------
-bool sdsInit() {
+static bool sdsHandshake() {
   KLine.end();
   pinMode(KLINE_TX_GPIO, OUTPUT);
   digitalWrite(KLINE_TX_GPIO, HIGH);
@@ -71,6 +70,25 @@ bool sdsInit() {
     return true;
   }
   return false;
+}
+
+bool sdsInit() {
+  pinMode(KLINE_SLP_GPIO, OUTPUT);
+  digitalWrite(KLINE_SLP_GPIO, HIGH);
+  delay(20);
+
+  uint8_t tries = 0;
+  while (!connected && tries++ < 20) {
+    Serial.printf("init attempt %u\n", tries);
+    connected = sdsHandshake();
+    if (!connected) {
+      delay(500);
+    }
+  }
+  if (!connected) {
+    Serial.println("init failed — check pacing and POST_PULSE_MS");
+    return false;
+  }
 }
 
 // ------------------------------------------------------------------
@@ -174,52 +192,30 @@ uint8_t readLid(uint8_t lid, uint8_t *out, uint8_t outMax) {
 #define OFF_BATT      (32 - FRAME_OFFSET)
 
 
-bool decodeLid08(const uint8_t *d, uint8_t n) {
-  if (n <= OFF_GEAR) { ecu.valid = false; return false; }
+bool decodeLid08(const uint8_t *d, uint8_t n, EcuSnapshot* ecu) {
+  if (n <= OFF_GEAR) { 
+    ecu->valid = false; 
+    return false; 
+  }
 
-  ecu.rpmRaw  = ((uint16_t)d[OFF_RPM_HI] << 8) | d[OFF_RPM_LO];
-  ecu.tpsRaw  = d[OFF_TPS];
-  ecu.gearRaw = d[OFF_GEAR];
-  ecu.iatRaw  = d[OFF_IAT];
-  ecu.ectRaw  = d[OFF_ECT];
-  ecu.battRaw = d[OFF_BATT];
-  ecu.valid   = true;
+  ecu->rpmRaw  = ((uint16_t)d[OFF_RPM_HI] << 8) | d[OFF_RPM_LO];
+  ecu->tpsRaw  = d[OFF_TPS];
+  ecu->gearRaw = d[OFF_GEAR];
+  // ecu.iatRaw  = d[OFF_IAT];
+  // ecu.ectRaw  = d[OFF_ECT];
+  // ecu.battRaw = d[OFF_BATT];
+  ecu->valid   = true;
   return true;
 }
 
 
-void printCalibration() {
-  if (!ecu.valid) { Serial.println("no valid frame"); return; }
-
-  // Serial.printf("RPM  raw=%5u   /1=%5u  /4=%5u  *2=%5u\n",
-  //               ecu.rpmRaw, ecu.rpmRaw, ecu.rpmRaw / 4, ecu.rpmRaw * 2);
-
-  Serial.printf("TPS  raw=%3u     pct(/255)=%3u   pct(/2.55)=%3u\n",
-                ecu.tpsRaw,
-                (uint8_t)((uint16_t)ecu.tpsRaw * 100 / 255),
-                (uint8_t)(ecu.tpsRaw / 2));
-
-  // Serial.printf("ECT  raw=%3u     A-40=%4d  A/2-40=%4d\n",
-  //               ecu.ectRaw, (int)ecu.ectRaw - 40, (int)(ecu.ectRaw / 2) - 40);
-
-  // Serial.printf("IAT  raw=%3u     A-40=%4d  A/2-40=%4d\n",
-  //               ecu.iatRaw, (int)ecu.iatRaw - 40, (int)(ecu.iatRaw / 2) - 40);
-
-  Serial.printf("GEAR raw=0x%02X\n", ecu.gearRaw);
-
-  // Serial.printf("BATT raw=%3u     /10=%2u.%uV\n",
-  //               ecu.battRaw, ecu.battRaw / 10, ecu.battRaw % 10);
-  //Serial.println();
-}
-
-bool sdsRead() {
+bool sdsRead(EcuSnapshot* ecu) {
   uint8_t d[48];
   uint8_t n = readLid(0x08, d, sizeof(d));
 
   if (n)  {
     dump("08", d, n);
-    decodeLid08(d, n);
-    printCalibration();
+    decodeLid08(d, n, ecu);
     return true;
   }
   return false;

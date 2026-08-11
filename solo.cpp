@@ -2,7 +2,6 @@
 #include "driver/twai.h"
 #include "state.h"
 
-// ---------------- config ----------------
 #define CAN_TX_GPIO   GPIO_NUM_5
 #define CAN_RX_GPIO   GPIO_NUM_4
 
@@ -14,9 +13,6 @@ const uint16_t RPM_MAX  = 12000;
 const uint16_t RPM_MIN  = 500;
 const uint32_t STEP_MS  = 1000;
 
-// ---------------- state ----------------
-uint16_t rpm      = 0;
-int16_t  rpmDir   = +1;
 uint32_t lastStep = 0;
 uint32_t lastTx   = 0;
 
@@ -41,35 +37,22 @@ void soloInit() {
   Serial.println("CAN up @ 500 kbit/s");
 }
 
-// ---------------- sweep ----------------
-void updateSweep() {
-  uint32_t now = millis();
-  if (now - lastStep < STEP_MS) return;
-  lastStep = now;
-
-  int32_t next = (int32_t)rpm + rpmDir * RPM_STEP;
-  if (next >= RPM_MAX) { next = RPM_MAX; rpmDir = -1; }
-  else if (next <= RPM_MIN)  { next = RPM_MIN;       rpmDir = +1; }
-  rpm = (uint16_t)next;
-}
-
-// ---------------- broadcast ----------------
-void broadcast() {
+void broadcast(EcuSnapshot* ecu) {
   uint32_t now = millis();
   if (now - lastTx < BROADCAST_MS) return;
   lastTx = now;
 
-  Serial.printf("sending over CAN: gear=%d, tps=%d", ecu.gearRaw, ecu.tpsRaw);
+  Serial.printf("sending over CAN: gear=%d, tps=%d", ecu->gearRaw, ecu->tpsRaw);
   Serial.println();
   twai_message_t m = {};
   m.identifier       = BROADCAST_ID;
   m.flags            = TWAI_MSG_FLAG_NONE;
   m.data_length_code = 8;
-  uint16_t rpm2 = rpm; // ecu.rawRpm
-  m.data[0] = rpm2 >> 8;        // rpm, big endian, 1 rpm/bit
-  m.data[1] = rpm2 & 0xFF;
-  m.data[2] = ecu.gearRaw;
-  m.data[3] = ecu.tpsRaw;
+  uint16_t rpm = ecu->rpmRaw; // consider scaling
+  m.data[0] = rpm >> 8;        // rpm, big endian, 1 rpm/bit
+  m.data[1] = rpm & 0xFF;
+  m.data[2] = ecu->gearRaw; // this is good
+  m.data[3] = ecu->tpsRaw; // consider scaling
   m.data[4] = 0; 
   m.data[5] = 0; 
   m.data[6] = 0;
@@ -79,11 +62,9 @@ void broadcast() {
 }
 
 // ---------------- loop ----------------
-void soloSend() {
-  updateSweep();
-  broadcast();
+void soloSend(EcuSnapshot* ecu) {
+  broadcast(ecu);
 
-  // recover if the bus drops out (nothing ACKing us, wiring fault, etc.)
   twai_status_info_t st;
   if (twai_get_status_info(&st) == ESP_OK && st.state == TWAI_STATE_BUS_OFF) {
     Serial.println("bus-off, recovering");

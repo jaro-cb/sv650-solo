@@ -1,57 +1,79 @@
 #include <Arduino.h>
 
-
-// sv650 side
 #include "sds.h"
 #include "solo.h"
 #include "state.h"
 
-Ecu ecu;
-HardwareSerial KLine(2);
-bool     g_connected = false;
-uint32_t g_lastTx    = 0;
+QueueHandle_t msgQueue;
 
-// ------------------------------------------------------------------
-// Once calibrated, replace the above with these and fix the constants
-// ------------------------------------------------------------------
-uint16_t rpm()  { return ecu.rpmRaw;             /* adjust divisor */ }
-uint8_t gear()  { return ecu.gearRaw; }
-uint8_t  tps()  { return (uint16_t)ecu.tpsRaw * 100 / 255; }
-int8_t   ect()  { return (int)ecu.ectRaw - 40;   /* adjust */ }
-int8_t   iat()  { return (int)ecu.iatRaw - 40;   /* adjust */ }
+void publisherTask(void *pvParameters) {
+  EcuSnapshot ecu;
 
-// ------------------------------------------------------------------
+  while(1) {
+    bool read = sdsRead(&ecu);
+    if (!read) {
+      continue;
+    }
+    BaseType_t status = xQueueOverwrite(msgQueue, &ecu);
+    
+    if (status == pdPASS) {
+      Serial.print("[Publisher] Sent");
+    } else {
+      Serial.println("[Publisher] Queue full! Dropped message.");
+    }
+  }
+}
+
+void subscriberTask(void *pvParameters) {
+  EcuSnapshot ecu;
+  while(1) {
+    if (xQueueReceive(msgQueue, &ecu, portMAX_DELAY) == pdPASS) {
+      soloSend(&ecu);
+      Serial.print("[Subscriber] Received");
+    }
+  }
+}
+
 void setup() {
-  // Serial.begin(115200);
-  // delay(1200);
-  // Serial.println("\n\n######## SDS reader ########");
+  Serial.begin(115200);
+  delay(1200);
+  
+  msgQueue = xQueueCreate(1, sizeof(EcuSnapshot));
 
-  pinMode(KLINE_SLP_GPIO, OUTPUT);
-  digitalWrite(KLINE_SLP_GPIO, HIGH);
-  delay(20);
-
-  uint8_t tries = 0;
-  while (!g_connected && tries++ < 5) {
-    Serial.printf("init attempt %u\n", tries);
-    g_connected = sdsInit();
-    if (!g_connected) delay(500);
-  }
-  if (!g_connected) {
-    Serial.println("init failed — check pacing and POST_PULSE_MS");
-    return;
-  }
-
+  sdsInit();
   soloInit();
+
+  xTaskCreatePinnedToCore(
+    publisherTask,     // Function to implement the task
+    "SDS_Publisher",        // Name of task
+    2048,               // Stack size in words
+    NULL,               // Task input parameter
+    1,                  // Priority of the task
+    NULL,               // Task handle
+    0                   // Core ID
+  );
+
+  // Create the Subscriber Task on Core 1
+  xTaskCreatePinnedToCore(
+    subscriberTask,    // Function to implement the task
+    "SOLO_Subscriber",       // Name of task
+    2048,               // Stack size in words
+    NULL,               // Task input parameter
+    1,                  // Priority of the task
+    NULL,               // Task handle
+    1                   // Core ID
+  );
 }
 
 // ------------------------------------------------------------------
 void loop() {
-  if (!g_connected) { 
-    delay(1000); 
-    return; 
-  }
-  sdsRead();
-  soloSend();
+  vTaskDelete(NULL); 
+  // if (!g_connected) { 
+  //   delay(1000); 
+  //   return; 
+  // }
+  // sdsRead();
+  // soloSend();
 
  
   //delay(1000);
