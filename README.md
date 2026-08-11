@@ -1,0 +1,1 @@
+SV650 -kline-> esp32 -can-> AIM SOLO2
